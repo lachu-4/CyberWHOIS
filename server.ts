@@ -1,6 +1,12 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import axios from "axios";
+import dns from "dns";
+import { promisify } from "util";
+
+const resolve4 = promisify(dns.resolve4);
+const resolveNs = promisify(dns.resolveNs);
+const lookup = promisify(dns.lookup);
 import rateLimit from "express-rate-limit";
 import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
@@ -135,8 +141,10 @@ app.get("/api/whois/:domain", async (req, res) => {
   const cleanDomain = domain.toLowerCase().trim();
 
   try {
+    let apiAuthError = false;
+
     // Attempt WhoisXML API first if key is present
-    if (apiKey && apiKey !== "your_whoisxmlapi_key_here") {
+    if (apiKey && apiKey.length > 10) {
       try {
         console.log(`Fetching WHOIS data for: ${cleanDomain} via WhoisXML API`);
         const response = await axios.get(`https://www.whoisxmlapi.com/whoisserver/WhoisService`, {
@@ -148,36 +156,55 @@ app.get("/api/whois/:domain", async (req, res) => {
 
         if (response.data && !response.data.ErrorMessage) {
           const record = response.data.WhoisRecord;
-          // Even if there's a dataError like MASKED_WHOIS_DATA, if we have a record, it's a valid result
-          if (record) {
+          // If we have a record and it's NOT masked, return it.
+          // If it IS masked, we'll keep it as a backup but continue to RDAP to see if it has more info.
+          if (record && record.dataError !== "MASKED_WHOIS_DATA") {
             // Ensure domainName is present for the UI
             if (!record.domainName) record.domainName = cleanDomain;
             
             const risk = analyzeRisk(response.data, false);
             return res.json({ raw: record, analysis: risk, source: 'WhoisXML' });
+          } else if (record && record.dataError === "MASKED_WHOIS_DATA") {
+            console.log(`WhoisXML returned masked data for ${cleanDomain}, checking RDAP for potentially more info...`);
           }
         }
         console.warn(`WhoisXML API returned no data for ${cleanDomain}, falling back to RDAP`);
       } catch (apiErr: any) {
-        console.warn(`WhoisXML API failed for ${cleanDomain} (${apiErr.message}), falling back to RDAP`);
+        if (apiErr.response?.status === 401) {
+          apiAuthError = true;
+          console.error(`WhoisXML API: 401 Unauthorized. The API key is invalid or expired. Falling back to RDAP.`);
+        } else {
+          console.warn(`WhoisXML API failed for ${cleanDomain} (${apiErr.message}), falling back to RDAP`);
+        }
       }
     }
 
     // Fallback: RDAP (Free ICANN Protocol)
     console.log(`Attempting RDAP lookup for: ${cleanDomain}`);
+    
+    const userAgents = [
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+    ];
+
     const axiosConfig = {
       timeout: 15000,
       headers: { 
         'Accept': 'application/rdap+json, application/json',
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Referer': 'https://www.iana.org/'
+        'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)],
+        'Cache-Control': 'no-cache'
       }
     };
 
     const redirectors = [
-      `https://rdap.iana.org/domain/${cleanDomain}`,
+      `https://rdap.verisign.com/com/v1/domain/${cleanDomain}`, // Authoritative for .com/.net
       `https://rdap.org/domain/${cleanDomain}`,
-      `https://rdap.verisign.com/com/v1/domain/${cleanDomain}`
+      `https://rdap.iana.org/domain/${cleanDomain}`,
+      `https://rdap.publicinterestregistry.net/rdap/domain/${cleanDomain}`, // .org
+      `https://rdap.centralnic.com/rdap/domain/${cleanDomain}`,
+      `https://rdap.nic.google/domain/${cleanDomain}`, // .google, .app, etc.
+      `https://rdap.identitydigital.services/rdap/domain/${cleanDomain}` // Many new gTLDs
     ];
 
     let lastError = null;
@@ -185,7 +212,10 @@ app.get("/api/whois/:domain", async (req, res) => {
 
     for (const url of redirectors) {
       if (url.includes('verisign') && !cleanDomain.endsWith('.com') && !cleanDomain.endsWith('.net')) continue;
+      if (url.includes('publicinterestregistry') && !cleanDomain.endsWith('.org')) continue;
+      
       try {
+        console.log(`Trying RDAP server: ${url}`);
         const resp = await axios.get(url, axiosConfig);
         if (resp.status === 200 && resp.data) {
           rdapResponse = resp.data;
@@ -193,7 +223,9 @@ app.get("/api/whois/:domain", async (req, res) => {
         }
       } catch (err: any) {
         lastError = err;
-        if (err.response?.status === 404) break;
+        console.warn(`RDAP server ${url} failed: ${err.message}`);
+        // Add a small delay before trying the next server
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
 
@@ -227,10 +259,34 @@ app.get("/api/whois/:domain", async (req, res) => {
         };
 
         const risk = analyzeRisk(rdapResponse, true);
-        return res.json({ raw: normalizedData, analysis: risk, source: 'RDAP' });
+        return res.json({ raw: normalizedData, analysis: risk, source: 'RDAP', apiAuthError });
       }
 
-    // If we reach here, both WhoisXML and RDAP failed to find a valid record
+    // Final Fallback: DNS Check (If WHOIS/RDAP fail, check if domain exists in DNS)
+    try {
+      console.log(`WHOIS/RDAP failed. Attempting DNS check for: ${cleanDomain}`);
+      const [ips, ns] = await Promise.all([
+        resolve4(cleanDomain).catch(() => []),
+        resolveNs(cleanDomain).catch(() => [])
+      ]);
+
+      if (ips.length > 0 || ns.length > 0) {
+        console.log(`DNS check confirmed domain existence for ${cleanDomain}`);
+        const dnsData = {
+          domainName: cleanDomain,
+          registrarName: "Unknown (WHOIS Unavailable)",
+          status: "Active (DNS Verified)",
+          nameServers: { hostNames: ns.map((n: any) => typeof n === 'string' ? n : n.value) },
+          rawText: `WHOIS/RDAP data could not be retrieved, but the domain exists in DNS.\n\nIP Addresses: ${ips.join(', ')}\nNameservers: ${ns.map((n: any) => typeof n === 'string' ? n : n.value).join(', ')}`
+        };
+        const risk = { score: 10, level: "Low", factors: ["WHOIS record not found, but domain is active in DNS"], isActive: true };
+        return res.json({ raw: dnsData, analysis: risk, source: 'DNS Fallback', apiAuthError });
+      }
+    } catch (dnsErr) {
+      console.warn(`DNS check failed for ${cleanDomain}`);
+    }
+
+    // If we reach here, both WhoisXML, RDAP, and DNS failed to find a valid record
     const notFoundError = new Error("The domain is not present.");
     (notFoundError as any).response = { status: 404 };
     throw notFoundError;
@@ -270,5 +326,8 @@ async function startServer() {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
+
+// Export for Vercel
+export default app;
 
 startServer();

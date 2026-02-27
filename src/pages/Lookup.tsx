@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, ShieldAlert, ShieldCheck, Globe, Calendar, Server, Building2, Copy, Download, AlertTriangle } from 'lucide-react';
+import { Search, ShieldAlert, ShieldCheck, Globe, Calendar, Server, Building2, Copy, Download, AlertTriangle, Info } from 'lucide-react';
 import axios from 'axios';
 import { supabase } from '../lib/supabase';
 import { User } from '@supabase/supabase-js';
@@ -136,6 +136,22 @@ export default function Lookup({ user }: { user: User | null }) {
             animate={{ opacity: 1, y: 0 }}
             className="grid grid-cols-1 lg:grid-cols-3 gap-6"
           >
+            {/* API Auth Error Warning */}
+            {result.apiAuthError && (
+              <div className="lg:col-span-3 p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center gap-3 text-amber-500 mb-2">
+                <ShieldAlert className="w-5 h-5 shrink-0" />
+                <p className="text-sm font-medium">Warning: The WhoisXML API key is invalid or unauthorized. Falling back to basic RDAP data. Please check your WHOIS_API_KEY in the environment settings.</p>
+              </div>
+            )}
+
+            {/* Masked Data Warning */}
+            {(result.raw?.dataError === "MASKED_WHOIS_DATA" || result.raw?.registrant?.organization === "Redacted") && (
+              <div className="lg:col-span-3 p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center gap-3 text-blue-400 mb-2">
+                <Info className="w-5 h-5 shrink-0" />
+                <p className="text-sm font-medium">Privacy Notice: Some WHOIS data is redacted or masked. This is common for domains protected by privacy services or subject to GDPR regulations.</p>
+              </div>
+            )}
+
             {/* Risk Analysis Card */}
             <div className="lg:col-span-1 space-y-6">
               <div className="bg-white/5 border border-white/10 rounded-2xl p-6 shadow-xl">

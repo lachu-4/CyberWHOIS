@@ -1,20 +1,31 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# CyberWHOIS Intelligence Deployment Guide
 
-# Run and deploy your AI Studio app
+This project is a full-stack application with an Express backend and a React (Vite) frontend.
 
-This contains everything you need to run your app locally.
+## Vercel Deployment
 
-View your app in AI Studio: https://ai.studio/apps/cc890c62-052c-44b1-89ba-5cb6d2828f43
+To deploy this application to Vercel:
 
-## Run Locally
+1.  **Push to GitHub**: Ensure your code is pushed to your GitHub repository.
+2.  **Import to Vercel**: Connect your GitHub repository to Vercel.
+3.  **Configure Environment Variables**:
+    *   `WHOIS_API_KEY`: Your WhoisXML API key (e.g., `at_MF9h9xbfsXmFLfDnO91OS97SDk7R4`).
+    *   `VITE_SUPABASE_URL`: Your Supabase project URL.
+    *   `VITE_SUPABASE_ANON_KEY`: Your Supabase anonymous key.
+4.  **Build Settings**:
+    *   Framework Preset: `Other` (Vercel should detect the `vercel.json` automatically).
+    *   Build Command: `npm run build`.
+    *   Output Directory: `dist`.
 
-**Prerequisites:**  Node.js
+## Local Development
 
+1.  Install dependencies: `npm install`
+2.  Set up `.env` file based on `.env.example`.
+3.  Run the dev server: `npm run dev`
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Features
+
+*   **Multi-source WHOIS**: WhoisXML API + RDAP Fallback.
+*   **DNS Verification**: Final fallback to verify domain existence via DNS.
+*   **Risk Scoring**: Real-time analysis of domain age, registrar, and jurisdiction.
+*   **Privacy Aware**: Handles GDPR/Redacted data gracefully.
